@@ -15,9 +15,9 @@ struct IIE2 : public ogx::Plugin::EasyMethod
 	// parameters
 	Data::ResourceID	m_node_id;
 	Integer				neighborCount;	
+	float				thresh;
 
 	//methods
-
 #pragma region methods
 			//inputs:	normalsNeighboorhood - normal vectors of given neighborhood,
 //			neighborsCount - size of neighborhood
@@ -43,12 +43,16 @@ struct IIE2 : public ogx::Plugin::EasyMethod
 	//computes angular deviation basing on equation below:
 	//u dot v = |u||v|*cos(x) -> x = arccos((u dot v)/(|u||v|))
 	//inputs:	u, v: 3D vectors
-	//output:	angularDeviation in rad
+	//output:	angularDeviation in deg
 	inline float angularDeviation(const Clouds::Point3D& u, const Clouds::Point3D& v)
 	{
-		return acos((u.dot(v)) / (u.norm() * v.norm()));
+		return radToDeg(acos((u.dot(v)) / (u.norm() * v.norm())));
 	}
 
+	inline float radToDeg(const float& rad)
+	{
+		return rad * 180 / PI;
+	}
 	//debug method which verboses 'count' first deviations
 	inline void logDeviations(const std::vector<float>& deviations, const int& count)
 	{
@@ -85,6 +89,7 @@ struct IIE2 : public ogx::Plugin::EasyMethod
 	{
 		bank.Add(L"node_id", m_node_id).AsNode();
 		bank.Add(L"Neighbors count", neighborCount = 3).Min(3);
+		bank.Add(L"Segmentation thresh", thresh = 15).Max(180);
 	}
 
 	bool Init(Execution::Context& context)
@@ -183,15 +188,73 @@ struct IIE2 : public ogx::Plugin::EasyMethod
 			// declare layer name and interface to layer
 			String layerName = L"Deviations layer";
 			Data::Layers::ILayer *deviationsLayer;
-
+			
 			// check if layer with that name exit already. If - points it, else create it
 			auto layers = cloud.FindLayers(layerName);
 			!layers.empty() ? deviationsLayer = layers[0] :
 				deviationsLayer = cloud.CreateLayer(layerName, 0);
 
-			points_all.SetLayerVals(deviations, *deviationsLayer);
+			points_all.SetLayerVals(deviations, *deviationsLayer);		
+#pragma endregion
+#pragma region creatingSegmentLayer
+			// declare layer name and interface to layer
+			String layerName1 = L"Segment number layer";
+			Data::Layers::ILayer *segmentsLayer;
+
+			// check if layer with that name exit already. If - points it, else create it
+			layers = cloud.FindLayers(layerName1);
+			!layers.empty() ? segmentsLayer = layers[0] :
+				segmentsLayer = cloud.CreateLayer(layerName1, 0);
 #pragma endregion
 
+			//initalize segment's number of each point with zero
+			int groupNumber = 0;
+			std::vector<float> zeros(points_all.size(), 0.0);
+			points_all.SetLayerVals(zeros, *segmentsLayer);
+			
+			for (auto& xyz : Data::Clouds::RangeLocalXYZConst(points_all))
+			{			
+				//start with trivial no-neighborhood
+				int neighSize = 1;
+	
+				//check bigger and bigger neighborhoods 
+				//as long as all points' deviations are less that thresh parameter
+				while (true)
+				{
+					std::vector<float> deviations;
+					deviations.reserve(neighSize);
+
+					//check deviations in current neighborhood
+					Clouds::KNNSearchKernel knnKernel(Math::Point3D::Zero(), neighSize);
+					Clouds::PointsRange neighborhood;
+					knnKernel.GetPoint() = xyz.cast<Math::Point3D::Scalar>();
+					cloud.GetAccess().FindPoints(knnKernel, neighborhood);
+					neighborhood.GetLayerVals(deviations, *deviationsLayer);
+
+					//check if deviations are below given thresh
+					//if - increase neighborhood size by 1
+					//else - stop checking voxel neighbors and assign them segment number
+					bool isDevLow = true;
+					for (auto dev : deviations)
+					{
+						if (dev > thresh)
+						{
+							isDevLow = false;
+						}
+					}
+					neighSize++;
+
+					if (isDevLow)
+						continue;
+					else
+					{
+						groupNumber++;
+						std::vector<float> segmentNumbers(neighSize, groupNumber);
+						neighborhood.SetLayerVals(segmentNumbers, *segmentsLayer);
+					}
+				}
+				
+			}
 		}		
 		, thread_count); // run with given number of threads, optional parameter, if not given will run in current thread
 	}
