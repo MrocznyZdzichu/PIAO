@@ -207,16 +207,17 @@ struct IIE2 : public ogx::Plugin::EasyMethod
 				segmentsLayer = cloud.CreateLayer(layerName1, 0);
 #pragma endregion
 
+#pragma region segmentation
 			//initalize segment's number of each point with zero
 			int groupNumber = 0;
 			std::vector<float> zeros(points_all.size(), 0.0);
 			points_all.SetLayerVals(zeros, *segmentsLayer);
-			
+
 			for (auto& xyz : Data::Clouds::RangeLocalXYZConst(points_all))
-			{			
+			{
 				//start with trivial no-neighborhood
 				int neighSize = 1;
-	
+
 				//check bigger and bigger neighborhoods 
 				//as long as all points' deviations are less that thresh parameter
 				while (true)
@@ -248,13 +249,39 @@ struct IIE2 : public ogx::Plugin::EasyMethod
 						continue;
 					else
 					{
-						groupNumber++;
-						std::vector<float> segmentNumbers(neighSize, groupNumber);
-						neighborhood.SetLayerVals(segmentNumbers, *segmentsLayer);
+						if (neighSize - 1 == 1) //jif neighborhood is non-trivial assing segment number
+						{
+							groupNumber++;
+							std::vector<float> segmentNumbers(neighSize, groupNumber);
+							neighborhood.SetLayerVals(segmentNumbers, *segmentsLayer);							
+						}
+						break;
 					}
 				}
-				
 			}
+#pragma endregion
+#pragma region hide unsegmented points
+			// initialize buffer for the output states
+			std::vector<ogx::Data::Clouds::State> outputStateBuffer;
+			outputStateBuffer.reserve(points_all.size());
+			ogx::Data::Clouds::State currentState;
+
+			auto const ignored_mask = context.Feedback().GetIgnoredChannels();
+			std::vector<float> segmentNumbers;
+			segmentNumbers.reserve(points_all.size());
+
+			points_all.GetLayerVals(segmentNumbers, *segmentsLayer);
+
+			//iterate through points segments numbers and ignore points which doesnt have segment
+			for (auto segNum : segmentNumbers)
+			{
+				segNum == 0 ? currentState |= ignored_mask : currentState.reset();
+				outputStateBuffer.push_back(currentState);
+			}
+
+			points_all.SetStates(outputStateBuffer);
+#pragma endregion
+
 		}		
 		, thread_count); // run with given number of threads, optional parameter, if not given will run in current thread
 	}
